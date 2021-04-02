@@ -92,27 +92,49 @@ String、StringBuffer（线程安全Synchronize）、StringBuilder（线程不�
 
 2. **线程不安全问题体现**：
 
-   resize()时对于哈希碰撞产生链表时，若还未将指针后移就被挂起，
+   - **jdk1.7** 头插法，resize时会出现环形链表
 
-   - **jdk1.7** 头插法，会出现环形链表
-
-   - **jdk1.8** 尾插法，出现值覆盖
+   - **jdk1.8** 尾插法，put时出现值覆盖
 
 3. **插入key为null**：
 
    存在table[0]的链表中
 
-
-
 ## ConcurrentHashMap原理
 
----
+- put()过程：
+  1. 计算哈希值
+  2. 死循环
+     1. 检查初始化，CAS初始化
+     2. 检查桶头是否为空，空则CAS直接插入
+     3. 检查是否正在扩容，是则帮助扩容
+     4. 加锁插入
+     5. 检查换树
+  3. 容量+1
+  
+- addCount()过程：
+  1. CAS加baseCount，成功则退出
+  2. 计算随机索引，加cell，成功则退出
+  3. 进入fullAddCount函数
+     1. 为空先初始化
+     2. 不为空CAS加
+     3. 加失败且没到cpu核数，扩容
+  4. 计算容量
+  5. 计算是否达到阈值，是否正在扩
+  6. 能扩就扩，不能扩协助扩容
+  
+- transfer()扩容过程：
 
----
+  1. 根据cpu核数计算每个线程扩容大小（最少16）
 
----
+  2. CAS分配具体区域（倒叙）
 
+  3. 扩容
 
+     - 判断桶位置是否为空
+     - 桶位置加锁迁移
+
+     - 在迁移桶第一个位置放置forward节点表示正在迁移
 
 ## 抽象类和抽象方法
 
@@ -190,6 +212,10 @@ String、StringBuffer（线程安全Synchronize）、StringBuilder（线程不�
 7. wait
 8. notify
 9. notifyAll
+
+## 重写equal为什么还要重写hashcode
+
+默认hashcode使用对象地址计算，只重写equal会出现equal却hashcode不一样的情况。
 
 ## 异常和错误
 
@@ -310,6 +336,12 @@ spring解决循环依赖：**https://my.oschina.net/zhangxufeng/blog/3096394**
 
 1. wait是Object的方法，必须用在同步代码块中。
 2. wait释放锁。
+
+### wait和lock的区别
+
+1. lock尝试获取锁，wait释放锁
+2. lock停止运行是**阻塞状态blocked**，wait停止运行是**等待waiting**
+3. lock的作用是保护多线程访问的共享资源，而wait的作用是用于多线程之间的线程通信，作用不一样
 
 
 
