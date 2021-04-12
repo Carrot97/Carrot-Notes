@@ -100,6 +100,11 @@ String、StringBuffer（线程安全Synchronize）、StringBuilder（线程不�
 
    存在table[0]的链表中
 
+4. **容量为2的幂次**：
+   - 位运算速度更快；
+   - 分布更加均匀；
+   - 扩容时一半的数迁移，更平均。
+
 ## ConcurrentHashMap原理
 
 - put()过程：
@@ -248,7 +253,7 @@ spring解决循环依赖：**https://my.oschina.net/zhangxufeng/blog/3096394**
 
 
 
-# 并发编程
+# JUC
 
 ## 1. 多线程的实现方式
 
@@ -364,7 +369,11 @@ spring解决循环依赖：**https://my.oschina.net/zhangxufeng/blog/3096394**
 
 ### 3 阻塞队列
 
-永远保证只有一个线程能够进行队列的出队和入队，也就是绝对的线程安全。
+​	永远保证只有一个线程能够进行队列的出队和入队，也就是绝对的线程安全。
+
+### 4 核心线程数
+
+​	计算密集型为CPU核数+1，IO密集型为2*CPU核数
 
 
 
@@ -421,6 +430,16 @@ spring解决循环依赖：**https://my.oschina.net/zhangxufeng/blog/3096394**
 
    - 可以：**共享锁**
    - 不可以：**排它锁**
+
+
+
+## Java线程通信方式
+
+1. synchronized + notify + wait
+2. lock + condition
+3. volatile + Atomic类
+4. cyclicBarrier API
+5. 阻塞队列
 
 
 
