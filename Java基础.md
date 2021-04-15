@@ -421,9 +421,9 @@ spring解决循环依赖：**https://my.oschina.net/zhangxufeng/blog/3096394**
    - 需要：**公平锁**
    - 不需要：**非公平锁**
 
-5. 一个线程多个流程中能否获取同一把锁（代表：synchronized、ReentrantLock）
+5. 一个线程多个流程中能否获取同一把锁
 
-   - 可以：**可重入锁**
+   - 可以：**可重入锁**（代表：synchronized、ReentrantLock）
    - 不可以：**非可重入锁**
 
 6. 多个线程能否共享一把锁（代表：ReentrantReadWriteLock）
