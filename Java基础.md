@@ -52,7 +52,19 @@ Java采用Unicode编码，每字节4比特
 
 ## Java中操作字符串都有哪些类
 
-String、StringBuffer（线程安全Synchronize）、StringBuilder（线程不安全）
+### String
+
+> String 是不可变的对象, 因此在每次对 String 类型进行改变的时候其实都等同于生成了一个新的 String 对象，然后将指针指向新的 String 对象，这样不仅效率低下，而且大量浪费有限的内存空间，所以经常改变内容的字符串最好不要用 String。
+>
+> ​		当执行String s = new String(“abc”);时，JVM首先在String Pool中查看是否存在字符串对象“abc”，如果不存在该对象，则先在String Pool中创建一个新的字符串对象“abc”，然后执行new String(“abc”)构造方法，在Heap里又创建一个新的字符串对象“abc”（new出来的对象都放在Heap里面），并将引用s指向Heap中创建的新对象；如果已存在该对象，则不用创建新的字符串对象“abc”，而直接使用String Pool中已存在的对象“abc”， 然后执行new String(“abc”)构造方法，在Heap里又创建一个新的字符串对象“abc”，并将引用s指向Heap中创建的新对象。 
+>
+> ​		简单来说，构造器方法是创建了一个字符串对象的副本。
+
+​	
+
+### StringBuffer（线程安全Synchronize）
+
+### StringBuilder（线程不安全）
 
 
 
@@ -361,11 +373,18 @@ spring解决循环依赖：**https://my.oschina.net/zhangxufeng/blog/3096394**
 
 ### 2 拒绝策略
 
-- 调用者运行策略：不抛弃，不异常，将任务回退给main线程；
-
-- 终止策略：直接抛异常；
-- 丢弃策略：直接丢弃任务；
-- 丢弃等待最久任务策略。
+- 调用者运行策略：
+  - 操作：不抛弃，不异常，将任务回退给main线程；
+  - 适用：不是特别在乎性能，但必须全部执行的任务。
+- 终止策略：
+  - 操作：直接抛异常；
+  - 适用：关键业务，当系统不能承受更大的并发量时能及时通过异常发现。
+- 丢弃策略：
+  - 操作：直接丢弃任务；
+  - 适用：不重要或允许存在误差的任务。
+- 丢弃老任务策略：
+  - 操作：丢弃等待最久任务策略；
+  - 适用：需要考虑时效性的任务。
 
 ### 3 阻塞队列
 
@@ -375,7 +394,36 @@ spring解决循环依赖：**https://my.oschina.net/zhangxufeng/blog/3096394**
 
 ​	计算密集型为CPU核数+1，IO密集型为2*CPU核数
 
+### 5 线程池种类
 
+1. **newCachedThreadPool**
+
+   - 核心线程数0，最大工作线程为Interger. MAX_VALUE，使用同步队列不存储任务，每来一个任务创建一个线程；
+   - 一定要注意控制任务的数量，否则，由于大量线程同时运行，很有会造成系统OOM。
+
+2. **newFixedThreadPool**
+
+   - 最大线程数=核心线程数，使用LinkedBlockingQueue；
+   - 在线程池空闲时，即线程池中没有可运行任务时，它不会释放工作线程，还会占用一定的系统资源。
+
+3. **newSingleThreadExecutor**
+
+   - 只有一个线程执行任务，使用LinkedBlockingQueue；
+   - 可保证顺序地执行各个任务，并且在任意给定的时间不会有多个线程是活动的。
+
+4. **newScheduleThreadPool**
+
+   - 使用延时队列（堆实现）存储任务，需要任务实现delayed接口。
+
+   
+
+### 6 线程出现运行异常
+
+1. execute方法,可以看异常输出在控制台，而submit在控制台没有直接输出，必须调用Future.get()方法时，可以捕获到异常。
+
+2. 一个线程出现异常不会影响线程池里面其他线程的正常执行。
+
+3. 线程不是被回收而是线程池把这个线程移除掉，同时创建一个新的线程放到线程池中。
 
 ## 锁的分类
 
@@ -406,8 +454,13 @@ spring解决循环依赖：**https://my.oschina.net/zhangxufeng/blog/3096394**
 
 3. 多个线程竞争同步资源时有无区别（代表：synchronized）
 
+   > 对象头markword字段、monitor（依赖操作系统的互斥锁）
+   >
+   > Java 6 之前synchronized 为纯重量级锁， 6中加入偏向锁和轻量级锁。
+
    - 自由操作资源：**无锁**
-     - 思想：多线程CAS修改
+
+   - 思想：多线程CAS修改
 
    - 同一个线程执行同步资源时自动获取资源：**偏向锁**
      - 背景：在大多数情况下，锁总是由同一线程多次获得，不存在多线程竞争；
@@ -431,6 +484,8 @@ spring解决循环依赖：**https://my.oschina.net/zhangxufeng/blog/3096394**
    - 可以：**共享锁**
    - 不可以：**排它锁**
 
+参考：https://www.cnblogs.com/jyroy/p/11365935.html
+
 
 
 ## Java线程通信方式
@@ -440,6 +495,17 @@ spring解决循环依赖：**https://my.oschina.net/zhangxufeng/blog/3096394**
 3. volatile + Atomic类
 4. cyclicBarrier API
 5. 阻塞队列
+6. completableFuture
+
+## AQS
+
+- 构成：volatile int state（代表共享资源）、一个FIFO存放被阻塞的线程的同步队列、多个FIFO的条件队列
+- 原理：
+  - 公平锁：线程查看状态符，若已被占用，则进入等待队列。
+  - 非公平锁：线程通过CAS去改变状态符，成功则获取锁成功，失败则进入等待队列，等待被唤醒。
+- 参考：https://blog.csdn.net/java_lyvee/article/details/98966684
+
+
 
 
 

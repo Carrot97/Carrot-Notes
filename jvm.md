@@ -1,0 +1,2 @@
+java -Xms4096M -Xmx4096M -Xmn3072M -Xss228K -XX:MetaspaceSize=128M -XX:MaxMetaspaceSize=256M -XX:MaxDirectMemorySize=1024M -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:ParallelGCThreads=2 -XX:ConcGCThreads=1 -XX:G1HeapRegionSize=2M -XX:+UseTLAB -XX:+ResizeTLAB -XX:TLABSize=64k -XX:TLABRefillWasteFraction=64 -XX:-DisableExplicitGC -XX:+PrintGCDetails -XX:+PrintGCApplicationStoppedTime -XX:+PrintHeapAtGC -Xloggc:./gc.log -jar medicine-1.3.2-SNAPSHOT.jar
+
