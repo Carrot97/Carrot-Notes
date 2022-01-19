@@ -390,3 +390,102 @@ typedef struct redisObject {
 >    - 所有元素长度小于64字节。
 > 2. 同时使用字典和跳表实现zset，通过字典实现O(1)的查找，通过跳表实现O(N)的range和rank。
 
+
+
+## 二、单机数据库
+
+### 1. 数据库
+
+#### 定义
+
+服务器
+
+```C
+struct redisServer {
+    // 大小通过dbnum来指定
+    redisDb *db;
+    // 默认大小为16
+    int dbnum;
+}
+```
+
+客户端
+
+```C
+typedef struct redisClient {
+    // 指向select的db
+    redisDb *db
+}
+```
+
+db结构
+
+```C
+typedef struct redisDb {
+    // 采用字典构建的键空间
+    dict *dict;
+    // 过期字典
+    dict *expires;
+}
+```
+
+#### 重要操作
+
+1. 读写时键空间的维护操作
+
+   > - 读取键后（写操作也要先读）服务器对是否命中进行统计；
+   > - 读取键后修改键的lru字段；
+   > - 读取键前先判断是否过期，若过期则先删除；
+   > - 若键被watch则对其修改后标记为dirty；
+   > - 每次修改都会对dirty键计数器+1（触发rdb）；
+   > - 若开启数据库通知功能，则在修改后进行相应的通知。
+
+2. 过期时间
+
+   > 设置命令的转换关系：EXPIRE -> PEXPIRE -> **PEXPIREAT** <- EXPIREAT；
+   >
+   > 保存方式：采用单独的过期字典来保存，过期字典的键与键空间的键共享。
+
+3. 过期删除策略
+
+   > 惰性删除：
+   >
+   > - 特点：对CPU友好，但容易造成内存泄露；
+   > - 实施：在取出键时进行过期检查。
+   >
+   > 定期删除：
+   >
+   > - 特点：对CPU和内存都相对友好，不易确定定期时常；
+   >
+   > - 实施：定期对键进行随机检查。
+   >
+   >   ```python
+   >   DEFAULT_DB_NUMBERS = 16
+   >   DEFAULT_KEY_NUMBERS = 20
+   >   current_db = 0
+   >   
+   >   def activeExpireCycle():
+   >   	db_numbers = min(server.dbnum, DEFAULT_DB_NUMBERS)
+   >   	for i in range(db_numbers):
+   >           # 对db进行循环操作
+   >           if current_db == db_nums: current_db = 0
+   >           redisDb = server.db[current_db]
+   >           current_db += 1
+   >           for j in range(DEFAULT_KEY_NUMBERS):
+   >               if redisDb.expires.size() == 0: break
+   >               key_with_ttl = redisDb.expires.get_random_key()
+   >               if is_expired(key_with_ttl):
+   >                   delete_key(key_with_ttl)
+   >               if reach_time_limit(): return
+   >   ```
+
+4. RDB、AOF和复制功能对过期键的处理
+
+   > RDB：save时不保存过期键，读取时若为主机则不读取过期键，若为从机则读取过期键；
+   >
+   > AOF：save时写入同时删除时写入，读取时不读；
+   >
+   > 复制：主机过期删除，从机过期不删除而是等待主机删除命令。**此处存在一致性问题**
+
+### 2. RDB持久化
+
