@@ -406,6 +406,19 @@ struct redisServer {
     redisDb *db;
     // 默认大小为16
     int dbnum;
+    // 记录RDB保存条件的数组
+    struct saveparam {
+        time_t seconds;
+        int changes;
+    } *saveparams;
+    // 修改计数器
+    long dirty;
+    // 上一次执行RDB持久化的时间
+    time_t lastsave;
+    // AOF缓冲区
+    sds aof_buf;
+    // AOF重写缓冲区(只有在AOF重写时使用)
+    sds aof_rewrite_buf;
 }
 ```
 
@@ -463,7 +476,7 @@ typedef struct redisDb {
    >   DEFAULT_DB_NUMBERS = 16
    >   DEFAULT_KEY_NUMBERS = 20
    >   current_db = 0
-   >   
+   >     
    >   def activeExpireCycle():
    >   	db_numbers = min(server.dbnum, DEFAULT_DB_NUMBERS)
    >   	for i in range(db_numbers):
@@ -488,4 +501,79 @@ typedef struct redisDb {
    > 复制：主机过期删除，从机过期不删除而是等待主机删除命令。**此处存在一致性问题**
 
 ### 2. RDB持久化
+
+#### 写入
+
+- SAVE：服务器进程执行
+- BGSAVE：派生子进程执行
+
+> 执行BGSAVE时：
+>
+> 1. 拒绝SAVE和BGSAVE命令；
+> 2. 推迟BGREWRITEAOF命令，如果BGREWRITEAOF命令正在执行则拒绝BGSAVE命令。
+
+#### 加载
+
+> Redis会首先采用AOF文件还原数据库，若未开启AOF功能则采用RDB；
+>
+> 加载RDB文件时服务器进程一直处于阻塞状态。
+
+#### 自动间隔性保存
+
+> 默认：900秒1次；300秒10次；60秒10000次。
+
+#### RDB文件结构
+
+- RDB整体
+
+  > |REDIS|db_version|databases|EOF|check_sum|
+  >
+  > EOF：377
+
+- databases部分
+
+  > |SELECTDB|db_number|EXPIRETIME_MS|time|REDIS_RDB_TYPE_SET|key|value|
+  >
+  > SELECTDB：376
+  >
+  > EXPIRETIME_MS：374
+
+- 字符串
+
+  > |ENCODING|integer|
+  >
+  > 无压缩：|len|string| 压缩：|REDIS_RDB_ENC_LZF|compressed_len|origin_len|compressed_string|
+
+- 链表、集合和哈希表按顺序排
+- intset、ziplist压缩乘一个字符串
+
+### 3. AOF持久化
+
+#### 文件类型：纯文本
+
+#### 写入
+
+> 服务器在执行完每条写命令后将命令追加至AOF缓冲区
+
+#### 同步
+
+> AOF通过时间事件来进行文件同步
+>
+> 三种模式
+>
+> - always：每个命令都同步；
+>
+> - everysec：每秒同步一次；
+>
+> - no：操作系统决定何时同步。
+>
+> **always性能最差，但最安全，no和everysec性能相近，但everysec更安全**
+
+#### 加载
+
+> 创建一个不带网络连接功能的为客户端对AOF文件中命令进行重新执行
+
+#### AOF重写
+
+> 服务器在AOF重写期间执行完每条写命令后将命令同时追加至AOF缓冲区和AOF重写缓冲区
 
