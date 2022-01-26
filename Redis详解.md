@@ -4,6 +4,8 @@
 
 ### 1. 简单动态字符串SDS
 
+Redis使用SDS代替C的字符串
+
 #### 定义
 
 ```c
@@ -53,6 +55,8 @@ struct sdshdr {
 5. **兼容C语言字符串方法**
 
 ### 2. 链表
+
+客户端状态、不定长缓冲区
 
 #### 定义
 
@@ -398,39 +402,6 @@ typedef struct redisObject {
 
 #### 定义
 
-服务器
-
-```C
-struct redisServer {
-    // 大小通过dbnum来指定
-    redisDb *db;
-    // 默认大小为16
-    int dbnum;
-    // 记录RDB保存条件的数组
-    struct saveparam {
-        time_t seconds;
-        int changes;
-    } *saveparams;
-    // 修改计数器
-    long dirty;
-    // 上一次执行RDB持久化的时间
-    time_t lastsave;
-    // AOF缓冲区
-    sds aof_buf;
-    // AOF重写缓冲区(只有在AOF重写时使用)
-    sds aof_rewrite_buf;
-}
-```
-
-客户端
-
-```C
-typedef struct redisClient {
-    // 指向select的db
-    redisDb *db
-}
-```
-
 db结构
 
 ```C
@@ -476,7 +447,7 @@ typedef struct redisDb {
    >   DEFAULT_DB_NUMBERS = 16
    >   DEFAULT_KEY_NUMBERS = 20
    >   current_db = 0
-   >     
+   >             
    >   def activeExpireCycle():
    >   	db_numbers = min(server.dbnum, DEFAULT_DB_NUMBERS)
    >   	for i in range(db_numbers):
@@ -577,3 +548,467 @@ typedef struct redisDb {
 
 > 服务器在AOF重写期间执行完每条写命令后将命令同时追加至AOF缓冲区和AOF重写缓冲区
 
+### 4. 事件
+
+Redis是一个事件驱动的应用程序
+
+主程序
+
+```python
+def main():
+	init_server()
+	while server_is_not_shutdown():
+		aeProcessEvents()
+	clean_server()
+```
+
+主循环
+
+```python
+def aeProcessEvents():
+	// 到达时间最近的时间事件
+	time_event = aeSearchNearestTimer()
+	remaind_ms = time_event.when - unix_ts_now()
+	remaind_ms = max(0, remaind_ms)
+	timeval = create_timeval_with_ms(remaind_ms)
+	// 根据remaind_ms决定阻塞的时间
+	aeApiPoll(timeval)
+	processFileEvents()
+	processTimeEvents()
+```
+
+#### 文件事件
+
+Redis基于Reactor模式开发了网络事件处理器，采用多路复用I/O模型
+
+> 套接字1~N -> I/O多路复用程序 -> 文件事件分派器 -> 事件处理器1~N
+>
+> - I/O多路复用程序通过队列向文件时间分派器传送套接字；
+> - I/O多路复用程序有四种实现，按优先级排序为：evport > epoll > kqueue > select；
+> - 客户端的写操作会使得套接字可读，触发服务器READABLE事件；客户端的读操作会使得套接字可写，触发服务器WRITABLE操作。
+>
+> 事件处理器分类：
+>
+> - 监听套接字关联连接应答处理器；
+> - 为连接后的客户端关联命令请求处理器；
+> - 执行完命令后，为客户端关联命令回复处理器；
+> - 主从复制时，主从服务器关联复制处理器。
+
+#### 时间事件
+
+分类：定时事件、周期性事件；
+
+定义:
+
+1. id
+2. when：毫秒级时间戳，记录时间事件的到达时间；
+3. timeProc：时间事件的处理器。
+
+​	**所有的时间事件都被存放在一个无需链表中**
+
+流程：
+
+```python
+def processTimeEvents():
+    for time_event in all_time_event():
+        if time_event.when <= unix_ts_now():
+            retval = time_event.timeProc()
+            // 如果是定时事件
+            if retval == AE_NOMORE：
+            	delete_time_event_from_server(time_event)
+            else:
+                update_when(time_event, retval)
+```
+
+实现：serverCron函数（默认周期100毫秒）**第6节中有详细描述**
+
+### 5. 客户端
+
+服务器通过链表维护客户端状态
+
+#### 定义
+
+```C
+typedef struct redisClient {
+    // 指向select的db
+    redisDb *db
+    // 套接字描述符
+    int fd;
+    // 名字
+    robj *name;
+    // 二进制标识
+    int flags;
+    // 输入缓冲区(不能超过1GB)
+    sds querybuf;
+    // 命令参数
+    robj **argv;
+   	// 参数长度(注意命令本身也是参数)
+    int argc;
+    // 命令实现函数
+    struct redisCommand *cmd;
+    // 定长输出缓冲区（默认为16KB）
+    char buf[REDIS_REPLY_CHUNK_BYTES];
+    int bufpos;
+    // 不定长缓冲区
+    list *reply;
+    // 身份验证标识位（只有开启密码才会使用）
+    int authenticated;
+    // 创建时间
+    time_t ctime;
+    // 最后一次互动时间
+    time_t lastinteraction;
+    // 缓冲区超出软性限制的时间
+    time_t obuf_soft_limit_reached_time;
+    // 从机的监听端口
+    int slave_listening_port;
+}
+```
+
+#### 何时关闭客户端
+
+1. 进程退出或被杀死；
+2. 发送了非法格式的命令；
+3. 执行client kill命令；
+4. 空转时间过长；
+5. 输入输出缓冲区超过限制；
+
+### 6. 服务器
+
+#### 定义
+
+```C
+struct redisServer {
+    // 大小通过dbnum来指定
+    redisDb *db;
+    // 默认大小为16
+    int dbnum;
+    // 记录RDB保存条件的数组
+    struct saveparam {
+        time_t seconds;
+        int changes;
+    } *saveparams;
+    // 修改计数器
+    long dirty;
+    // 上一次执行RDB持久化的时间
+    time_t lastsave;
+    // AOF缓冲区
+    sds aof_buf;
+    // AOF重写缓冲区(只有在AOF重写时使用)
+    sds aof_rewrite_buf;
+    // 客户端状态
+    list *clients;
+    // 时间缓存（秒级）
+    time_t unixtime;
+    // 时间缓存（毫秒级）
+    long mstime;
+    // lru时钟
+    unsigned lrulock;
+    // 上次进行抽样的时间
+    long ops_sec_last_sample_time;
+    // 上次抽样命令执行数量
+    long ops_sec_last_sample_ops;
+    // 环形数组，记录抽样结果（默认大小16）
+    long ops_sec_samples[REDIS_OPS_SEC_SAMPLES];
+    // 环形数组的索引
+    int ops_sec_idx;
+    // BGREWRITEAOF推迟标志位
+    int aof_rewrite_scheduled;
+    // 持久化的pid
+    pid_t rdb_child_pid;
+    pid_t aof_child_pid;
+    // 主服务器的信息
+    char *masterhost;
+    int masterport;
+}
+```
+
+#### 命令执行过程
+
+1. 将协议格式的命令存入输入缓冲区；
+
+2. 解析协议得到分离的命令参数，存入argv和argc；
+
+3. 匹配执行该命令的函数，存入cmd；
+
+4. 执行预备操作：
+
+   > 检查cmd指针是否执行null；
+   >
+   > 检查命令参数个数是否合法；
+   >
+   > 检查是否通过身份验证；
+   >
+   > 检查是否需要先GC；
+   >
+   > 若上一次BGSAVE出错，则拒绝命令；
+   >
+   > 若客户端订阅了频道，则至能执行订阅的命令；
+   >
+   > 若数据库正在载入，则只能执行flag=1的命令；
+   >
+   > 若服务器正在执行lua脚本超时阻塞，则只能执行关闭命令；
+   >
+   > 若服务器正在执行事务，则只能执行exec、discard、multi和watch，其他的进入事务队列；
+   >
+   > 若打开了监视器功能，则先将参数发给监视器，之后执行。
+
+5. 调用实现函数；
+
+6. 执行后续操作：
+
+   > 慢日志；
+   >
+   > 命令计数和记录耗时；
+   >
+   > AOF缓冲写入；
+   >
+   > 主从复制。
+
+7. 将结果反馈给客户端；
+
+8. 客户端打印结果。
+
+#### serverCorn函数
+
+1. 更新服务器时间缓存（每100毫秒）；
+2. 更新LRU时钟（每10秒）；
+3. 更新服务器每秒执行命令次数：先计算平均毫秒命令，在乘1000；
+4. 更新服务器峰值内存记录；
+5. 处理SIGTERM信号：关闭时仅修改标志位，通过时间事件进行关闭，关闭时先RDB；
+6. 管理客户端资源：超时的客户端，修正输入缓冲区；
+7. GC；
+8. 检查持久化：有BGREWRITEAOF被推迟 -> RDB条件满足 -> AOF条件满足；
+9. AOF文件写入；
+10. 关闭输出缓冲区超出限制的客户端；
+11. 自身执行计数。
+
+#### 初始化服务器
+
+1. 初始化服务器状态结构（默认属性）；
+2. 载入配置项（覆盖默认属性）；
+3. 初始化服务器数据结构；
+4. 还原数据库状态（先AOF再RDB）；
+5. 执行事件循环。
+
+
+
+## 多机数据库的实现
+
+### 1. 复制
+
+#### 旧版SYNC（没有增量同步功能，短线重连开销大）
+
+- 同步
+
+  > 1. 从机发送SYNC命令；
+  > 2. 主机进行BGSAVE，并发送给从机；
+  > 3. 主机发送缓冲区保存的所有写命令。
+
+- 命令传播
+
+#### 新版PSYNC
+
+> 第一次复制：PSYNC ? -1 -> +FULLRESYNC <runid> <offset>
+>
+> 部分同步：PSYNC <runid> <offset> -> +CONTINUE
+
+#### 具体实现
+
+1. 设置主服务器的地址和端口；
+2. 连理套接字连接；
+3. 发送ping命令，确认连接有效且主服务器能正常工作（失败后重复）；
+
+4. 身份验证（只有主从同时关闭，或同时开且且通过后才能继续同步）；
+5. 发送端口信息，告知主服务自己的监听端口；
+6. 同步；
+7. 命令传播。
+
+#### 心跳检测
+
+从服务器每秒向主服务器发送检测命令
+
+- 检测主从服务器的网络连接状态；
+- 辅助实现min-slaves选项（如果主机小于预先配置的**稳定**从机**数量**则拒绝写命令）；
+- 检测命令丢失（offset比对）。
+
+### 2. Sentinel
+
+#### 定义
+
+sentinel
+
+```c
+struct sentinelState {
+	// 当前纪元，用于选举时计数
+	uint64_t current_epoch;
+    // 主服务器字典
+    dict *master;
+    // 是否进入TILT模式
+    int tilt;
+    // 正在执行的脚本数
+    int running_sripts;
+    // 进入TILT模式的时间
+    mstime_t tilt_start_time;
+    // 最后一次执行时间处理器的时间
+    mstime_t prevoius_time;
+    // 用户脚本队列
+    list *scripts_queue;
+}
+```
+
+监听的服务器实例
+
+```C
+typedef struct sentinelRedisInstance {
+	// 服务器状态
+    int flags;
+    // 实例名字（主服务器是配置文件中起的名字，从服务器为ip:port）
+    char *name;
+    // 运行id
+    char *runid;
+    // 配置纪元
+    uint64_t config_epoch;
+    // 实例的地址
+    sentinelAddr *addr;
+    // 主观下线周期
+    mstime_t down_after_period;
+    // 客观下线票数
+    int querum;
+    // 故障转移时，同时同步的从机数量
+    int parallel_syncs;
+    // 刷新故障迁移状态的最大时限
+    mstime_t failover_timeout;
+    // 从机状态
+    dict slaves;
+    // 哨兵状态
+    dict sentinels;
+}
+```
+
+#### 初始化
+
+1. 初始化服务器；
+
+2. 使用Sentinel专用代码；
+
+3. 初始化Sentinel状态；
+
+4. 初始化masters属性；
+
+5. 创建与主服务器的链接（命令连接、订阅连接）:
+
+   > 订阅连接无法缓存信息，不能在接收的同时发送命令
+   >
+   > 订阅链接用于哨兵的互相发现
+
+#### 获取信息
+
+1. 获取主服务器状态（每10秒发送一次INFO命令，自动发现从服务器）；
+
+2. 获取从服务器状态（每10秒发送一次INFO命令）；
+
+3. 向主从服务器发送消息（每2秒向订阅频道发送一次监控命令）；
+4. 接收主从服务器的订阅消息（更新服务器状态和哨兵状态，自动发现其他哨兵）；
+5. 创建与其他哨兵的连接（仅需要命令连接）；
+
+#### 状态监控（针对主从服务器和其他哨兵）
+
+1. 检测主观下线（每秒一次发送PING命令）；
+2. 检测客观下线（SENTINEL is-master-down-by-addr <ip> <port> <current_epoch> <runid>），同时进行选举；
+
+#### 故障转移
+
+1. 选出新的主服务器（在线、近5秒成功通信、偏移量最大且id最小的从机）；
+2. 修改从服务器复制目标；
+3. 将旧的主服务器改为从服务器。
+
+### 3. 集群
+
+#### 定义（CRC16计算槽位）
+
+节点
+
+```C
+struct clusterNode {
+	// 节点创建时间
+	mstime_t ctime;
+	// 名字，40个16进制字符组成
+	char name[REDIS_CLUSTER_NAMELEN];
+	// 状态位
+	int flags;
+	// 当前纪元
+	uint64_t configEpoch;
+	// 地址
+	char ip[REDIS_IP_STR_LEN];
+	int port;
+	// 连接节点的信息
+	clusterLink *link;
+    // 处理的槽位
+    unsigned char slots[16384/8];
+    int numslots;
+}
+```
+
+连接
+
+```C
+typedef struct clusterLink {
+	mstime_t ctime;
+	// 套接字描述符
+	int fd;
+	// 输出缓冲区
+	sds sndbuf;
+	// 输入缓冲区
+	sds rcvbuf;
+	// 连接相关节点
+	struct clusterNode *node;
+}
+```
+
+集群状态
+
+```C
+typedef struct clusterState {
+	// 指向当前节点的指针
+	clusterNode *myself;
+	// 当前纪元
+	uint64_t currentEpoch;
+	// 当前状态
+	int state;
+	// 至少处理一个槽的节点数量
+	int size;
+	// 集群节点名单
+	dict *nodes;
+    // 所有槽位的指派信息
+    clusterNode *slot[16384];
+    // 键与槽之间的关系（用于批量操作）
+    zskiplist *slots_to_keys;
+    // 正在迁入的槽位
+    clusterNode *importing_slots_from[16384];
+    // 正在迁出的槽位
+    clusterNode *migrating_slots_to[16384];
+}
+```
+
+#### 集群连接
+
+1. A节点在自己的clusterState.nodes中为B节点创建clusterNode结构；
+2. A向B发送meet消息；
+3. B节点在自己的clusterState.nodes中为A节点创建clusterNode结构，并回复pong；
+4. A收到后回复ping。
+
+#### 查询数据库
+
+1. 计算键所在的槽位；
+2. 若指派给了当前节点则直接执行命令；
+3. 若指派给了其他节点则重定向到其他节点。
+
+#### 重新分片
+
+1. redis-trib通知目标节点和源节点，准备好对slot的迁移；
+2. 源节点向redis-trib发送最多count个slot内的**键名**；
+3. redis-trib命令源节点开始迁移；
+4. 重复2-3直至迁移完毕；
+5. redis-tri通知集群内的其他节点slot已成功迁移。
+
+**迁移过程中查询命令会先查源节点，源节点没有再查目的节点**
