@@ -31,7 +31,7 @@ struct sdshdr {
 
 3. **减少修改字符串时带来的内存重新分配次数**
 
-   > C语言中每次对字符串的需改都将引入以此内存重新分配操作，如果忘记将会出现两种问题。
+   > C语言中每次对字符串的修改都将引入一次内存重新分配操作，如果忘记将会出现两种问题。
    >
    > 1. 空间不足时append——内存溢出
    > 2. trim后未释放空间——内存泄露
@@ -140,7 +140,7 @@ typedef struct dictEntry {
 
 1. **哈希算法**
 
-   > 先计算哈希值在计算索引值，哈希算法为murmurHash2。
+   > 先计算哈希值再计算索引值，哈希算法为murmurHash2。
    >
    > ```C
    > hash = dict->type->hashFunction(key);
@@ -356,7 +356,7 @@ typedef struct redisObject {
 - 内存回收：redis采用引用计数算法实现内存回收；
 - 对象共享：字符串实现引用共享节约内存空间，另外在redis启动时会直接创建0-9999整数的sds。
 
-4. lru
+5. lru
 
 #### 字符串对象
 
@@ -447,7 +447,7 @@ typedef struct redisDb {
    >   DEFAULT_DB_NUMBERS = 16
    >   DEFAULT_KEY_NUMBERS = 20
    >   current_db = 0
-   >             
+   >                 
    >   def activeExpireCycle():
    >   	db_numbers = min(server.dbnum, DEFAULT_DB_NUMBERS)
    >   	for i in range(db_numbers):
@@ -513,7 +513,9 @@ typedef struct redisDb {
 
   > |ENCODING|integer|
   >
-  > 无压缩：|len|string| 压缩：|REDIS_RDB_ENC_LZF|compressed_len|origin_len|compressed_string|
+  > 无压缩：|len|string| 
+  >
+  > 压缩：|REDIS_RDB_ENC_LZF|compressed_len|origin_len|compressed_string|
 
 - 链表、集合和哈希表按顺序排
 - intset、ziplist压缩乘一个字符串
@@ -604,7 +606,7 @@ Redis基于Reactor模式开发了网络事件处理器，采用多路复用I/O�
 2. when：毫秒级时间戳，记录时间事件的到达时间；
 3. timeProc：时间事件的处理器。
 
-​	**所有的时间事件都被存放在一个无需链表中**
+​	**所有的时间事件都被存放在一个无序链表中**
 
 流程：
 
@@ -946,6 +948,13 @@ struct clusterNode {
     // 处理的槽位
     unsigned char slots[16384/8];
     int numslots;
+    // 若为从节点，需要指向主节点的指针
+    struct clusterNode *slaveof;
+    // 从节点信息
+    int numslaves;
+    struct clusterNode **slaves;
+    // 下线报告
+    list *fail_reports;
 }
 ```
 
@@ -1012,3 +1021,88 @@ typedef struct clusterState {
 5. redis-tri通知集群内的其他节点slot已成功迁移。
 
 **迁移过程中查询命令会先查源节点，源节点没有再查目的节点**
+
+#### 故障检测
+
+> 定期向其他节点发送ping命令，若规定时间内未收到回复则向集群内所有节点发送下线报告。若超过数主节点都认为下线则进行转移。
+
+#### 故障转移
+
+1. 从下线主节点的所有从节点中选取一个；
+
+   > 每个纪元中，存在负责槽位的主节点将自己的一票投给首先请求的从节点，获得票数过半的节点被选中。
+
+2. 执行slaveof no one；
+3. 将主节点负责的槽位都指派给自己；
+4. 向集群广播一条pong消息。
+
+
+
+## 独立功能的实现
+
+### 发布与订阅
+
+```C
+struct redisServer {
+	// 频道订阅信息
+	dict *pubsub_channels;
+	// 模式订阅信息
+	list *pubsub_patterns;
+}
+```
+
+#### 订阅频道
+
+- 若频道存在字典中，则直接追加；
+- 若不存在，先创建再添加。
+
+#### 退订频道
+
+1. 直接删除退订的客户端信息；
+2. 若删除后字典值为空，则删除键。
+
+#### 模式订阅与退订
+
+- 直接追加和删除链表中信息。
+
+### 事务
+
+#### 事务开始
+
+> 开启客户端的REDIS_MULTI标志位
+
+#### 命令入队
+
+> 客户端采用一个fifo队列来存放入队的命令
+
+```C
+typedef struct redisClient {
+	multiState mstate;
+}
+```
+
+```C
+typedef struct multiState {
+	multiCmd *commands;
+	int count;
+}
+```
+
+#### WATCH的实现
+
+> - 使用监视键字典来保存那些客户端监视了哪些键
+> - 在redis执行写操作后会查询字典来修改对应客户端的CAS标志位
+> - redis在执行exec前会率先检查客户端标志位，若存在CAS标志则直接拒绝执行
+
+```C
+typedef struct redisDb {
+	dict *watched_keys;
+}
+```
+
+#### ACID性质
+
+1. 原子性：通过队列将多个操作当作一个整体，但不支持回滚；
+2. 一致性：入队错误直接拒绝执行，执行错误跳过执行；
+3. 隔离性：单线程保证；
+4. 持久性：自动情况只有在未开启no-appendfsync-on-rewrite时的always模式AOF可以保证，手动在事务最后加save也可保证。
